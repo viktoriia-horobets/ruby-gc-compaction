@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ruby GC Compaction — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root { --bg:#0f172a; --panel:#111827; --muted:#94a3b8; --accent:#38bdf8; --text:#e5e7eb; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:linear-gradient(180deg,#0b1220,#0f172a 30%);color:var(--text)}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    .header{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .title{font-size:22px;font-weight:700;letter-spacing:.3px}
+    .card{background:rgba(17,24,39,.7);border:1px solid rgba(148,163,184,.15);border-radius:16px;padding:16px}
+    .row{display:grid;grid-template-columns:1fr;gap:16px}
+    @media (min-width:900px){.row{grid-template-columns:1fr 1fr}}
+    label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
+    input[type=file]{background:#0b1020;border:1px dashed rgba(148,163,184,.35);border-radius:12px;padding:10px;width:100%;color:var(--text)}
+    select{background:#0b1020;border:1px solid rgba(148,163,184,.35);border-radius:12px;padding:10px;color:var(--text);width:100%}
+    .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+    .chip{background:#0b1020;border:1px solid rgba(148,163,184,.2);padding:6px 10px;border-radius:999px;font-size:12px;color:#cbd5e1}
+    .grid-3{display:grid;grid-template-columns:1fr;gap:12px}
+    @media (min-width:900px){.grid-3{grid-template-columns:repeat(3,1fr)}}
+    .metric{background:#0b1020;border:1px solid rgba(148,163,184,.2);padding:12px;border-radius:12px}
+    .metric .k{font-size:22px;font-weight:700}
+    .metric .l{font-size:12px;color:var(--muted)}
+    .subtle{color:var(--muted);font-size:12px}
+    .footer{margin-top:18px;color:#9aa5b1;font-size:12px}
+    a{color:#7dd3fc}
+    canvas{background:transparent !important}
+    table{width:100%;border-collapse:collapse;margin-top:8px}
+    th,td{border-bottom:1px solid rgba(148,163,184,.15);padding:8px 6px;font-size:13px}
+    th{color:#a5b4fc;text-align:left}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div class="title">Ruby GC <span style="color:#7dd3fc">Compaction</span> — Interactive Dashboard</div>
+      <div class="subtle">Load CSVs from <code>data/</code>: <em>results_no_compact.csv</em>, <em>results_manual_compact.csv</em>, <em>results_auto_compact.csv</em></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="row">
+        <div>
+          <label>Upload CSV files (you can select multiple)</label>
+          <input id="fileInput" type="file" accept=".csv" multiple />
+          <div id="fileChips" class="chips"></div>
+        </div>
+        <div>
+          <label>Focus configuration</label>
+          <select id="configSelect"><option value="__all__">All configurations</option></select>
+          <div class="subtle" style="margin-top:6px">Tip: the focus affects the table below; charts always show all configs for comparison.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="metric"><div class="l">Configs loaded</div><div class="k" id="mConfigs">0</div></div>
+      <div class="metric"><div class="l">Avg pages ↓ after compaction</div><div class="k" id="mPagesDelta">–</div></div>
+      <div class="metric"><div class="l">Avg compaction time (s)</div><div class="k" id="mCompactTime">–</div></div>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <div class="card">
+        <div class="subtle" style="margin-bottom:8px">Heap pages per configuration</div>
+        <canvas id="pagesChart" height="260"></canvas>
+      </div>
+      <div class="card">
+        <div class="subtle" style="margin-bottom:8px">Timing per configuration</div>
+        <canvas id="timingChart" height="260"></canvas>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div class="subtle">Summary table (averages per configuration)</div>
+        <div class="subtle">Expected columns in CSV: <code>before_heap_pages</code>, <code>after_heap_pages</code>, <code>compact_time_s</code>, <code>major_before_s</code>, <code>major_after_s</code></div>
+      </div>
+      <div id="summaryTable"></div>
+    </div>
+
+    <div class="footer">Built with <a href="https://www.chartjs.org/" target="_blank" rel="noreferrer">Chart.js</a>. All parsing happens in your browser — no upload.
+    </div>
+  </div>
+
+  <script>
+    function parseCSV(text){
+      const lines = text.trim().split(/\r?\n/);
+      const headers = lines.shift().split(',').map(h=>h.trim());
+      return lines.filter(Boolean).map(line=>{
+        const cells = line.split(',');
+        const obj = {};
+        headers.forEach((h,i)=>{ obj[h] = cells[i] !== undefined ? cells[i].trim() : '' });
+        return obj;
+      });
+    }
+
+    function coerceNumbers(row){
+      const numKeys = [
+        'run','do_compact','n_objects','keep_every',
+        'alloc_time_s','major_before_s','compact_time_s','major_after_s',
+        'before_heap_pages','before_free_slots','before_live_slots',
+        'after_heap_pages','after_free_slots','after_live_slots'
+      ];
+      for(const k of numKeys){ if(row[k] !== undefined && row[k] !== '') row[k] = Number(row[k]); }
+      return row;
+    }
+
+    const state = { files: {}, 
+                    charts: { pages:null, timing:null } };
+
+    function labelFromName(name){
+      return name.replace(/\.csv$/i,'').replace(/^results[_-]?/i,'');
+    }
+
+    function aggregate(rows){
+      const avg = (arr, key)=>{
+        const vals = arr.map(r=>Number(r[key])).filter(v=>!Number.isNaN(v));
+        return vals.length ? (vals.reduce((a,b)=>a+b,0)/vals.length) : 0;
+      };
+      return {
+        before_pages: avg(rows,'before_heap_pages'),
+        after_pages:  avg(rows,'after_heap_pages'),
+        pages_delta:  avg(rows,'before_heap_pages') - avg(rows,'after_heap_pages'),
+        compact_s:    avg(rows,'compact_time_s'),
+        major_before: avg(rows,'major_before_s'),
+        major_after:  avg(rows,'major_after_s')
+      };
+    }
+
+    function refreshMetrics(){
+      const configs = Object.keys(state.files);
+      document.getElementById('mConfigs').textContent = configs.length;
+      if(!configs.length){
+        document.getElementById('mPagesDelta').textContent = '–';
+        document.getElementById('mCompactTime').textContent = '–';
+        return;
+      }
+      const deltas = [], compT = [];
+      configs.forEach(c=>{
+        const ag = aggregate(state.files[c]);
+        deltas.push(ag.pages_delta);
+        compT.push(ag.compact_s);
+      });
+      const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
+      document.getElementById('mPagesDelta').textContent = mean(deltas).toFixed(2);
+      document.getElementById('mCompactTime').textContent = mean(compT).toFixed(3);
+    }
+
+    function buildSummaryTable(){
+      const container = document.getElementById('summaryTable');
+      const configs = Object.keys(state.files);
+      if(!configs.length){ container.innerHTML = '<div class="subtle">No data loaded.</div>'; return; }
+      const rows = configs.map(cfg=>{ const ag = aggregate(state.files[cfg]); return { cfg, ...ag }; });
+      const html = [`<table><thead><tr>
+        <th>Config</th>
+        <th>Before pages (avg)</th>
+        <th>After pages (avg)</th>
+        <th>Δ Pages</th>
+        <th>Compaction time (s)</th>
+        <th>Major GC before (s)</th>
+        <th>Major GC after (s)</th>
+      </tr></thead><tbody>`,
+      ...rows.map(r=>`<tr>
+        <td>${r.cfg}</td>
+        <td>${r.before_pages.toFixed(2)}</td>
+        <td>${r.after_pages.toFixed(2)}</td>
+        <td>${r.pages_delta.toFixed(2)}</td>
+        <td>${r.compact_s.toFixed(3)}</td>
+        <td>${r.major_before.toFixed(3)}</td>
+        <td>${r.major_after.toFixed(3)}</td>
+      </tr>`), '</tbody></table>'].join('');
+      container.innerHTML = html;
+    }
+
+    function drawCharts(){
+      const ctx1 = document.getElementById('pagesChart').getContext('2d');
+      const ctx2 = document.getElementById('timingChart').getContext('2d');
+      const labels = Object.keys(state.files);
+      const before = labels.map(l=>aggregate(state.files[l]).before_pages);
+      const after  = labels.map(l=>aggregate(state.files[l]).after_pages);
+      const majorB = labels.map(l=>aggregate(state.files[l]).major_before);
+      const compact= labels.map(l=>aggregate(state.files[l]).compact_s);
+      const majorA = labels.map(l=>aggregate(state.files[l]).major_after);
+
+      if(state.charts.pages) state.charts.pages.destroy();
+      if(state.charts.timing) state.charts.timing.destroy();
+
+      state.charts.pages = new Chart(ctx1, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label:'Before (pages)', data: before },
+            { label:'After (pages)',  data: after }
+          ]
+        },
+        options: {
+          responsive:true,
+          plugins:{ legend:{ labels:{ color:'#cbd5e1' } } },
+          scales:{ x:{ ticks:{ color:'#cbd5e1' } }, y:{ ticks:{ color:'#cbd5e1' } } }
+        }
+      });
+
+      state.charts.timing = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label:'Major GC (before)', data: majorB },
+            { label:'Compaction time',   data: compact },
+            { label:'Major GC (after)',  data: majorA }
+          ]
+        },
+        options: {
+          responsive:true,
+          plugins:{ legend:{ labels:{ color:'#cbd5e1' } } },
+          scales:{ x:{ ticks:{ color:'#cbd5e1' } }, y:{ ticks:{ color:'#cbd5e1' } } }
+        }
+      });
+    }
+
+    function refreshConfigSelect(){
+      const sel = document.getElementById('configSelect');
+      const current = sel.value;
+      sel.innerHTML = '<option value="__all__">All configurations</option>' +
+        Object.keys(state.files).map(cfg=>`<option value="${cfg}">${cfg}</option>`).join('');
+      if([...sel.options].some(o=>o.value===current)) sel.value = current;
+    }
+
+    function refreshAll(){
+      refreshConfigSelect();
+      refreshMetrics();
+      buildSummaryTable();
+      drawCharts();
+    }
+
+    const fileInput = document.getElementById('fileInput');
+    fileInput.addEventListener('change', async (e)=>{
+      const files = [...e.target.files];
+      document.getElementById('fileChips').innerHTML = files.map(f=>`<span class="chip">${f.name}</span>`).join('');
+
+      const reads = files.map(f=> new Promise((resolve)=>{
+        const reader = new FileReader();
+        reader.onload = ()=> resolve({ name:f.name, text:reader.result });
+        reader.readAsText(f);
+      }));
+
+      const results = await Promise.all(reads);
+      state.files = {};
+
+      for(const {name,text} of results){
+        try{
+          const rows = parseCSV(text).map(coerceNumbers);
+          const label = labelFromName(name);
+          if(rows.length) state.files[label] = rows;
+        }catch(err){ console.error('Failed to parse', name, err); }
+      }
+
+      refreshAll();
+    });
+
+    document.getElementById('configSelect').addEventListener('change', (e)=>{
+      const cfg = e.target.value;
+      if(cfg==='__all__'){ buildSummaryTable(); return; }
+      const container = document.getElementById('summaryTable');
+      if(!state.files[cfg]){ container.innerHTML = '<div class="subtle">No data for selected config.</div>'; return; }
+      const ag = aggregate(state.files[cfg]);
+      container.innerHTML = `<table><thead><tr>
+        <th>Config</th><th>Before pages (avg)</th><th>After pages (avg)</th><th>Δ Pages</th>
+        <th>Compaction time (s)</th><th>Major GC before (s)</th><th>Major GC after (s)</th>
+      </tr></thead>
+      <tbody><tr>
+        <td>${cfg}</td>
+        <td>${ag.before_pages.toFixed(2)}</td>
+        <td>${ag.after_pages.toFixed(2)}</td>
+        <td>${ag.pages_delta.toFixed(2)}</td>
+        <td>${ag.compact_s.toFixed(3)}</td>
+        <td>${ag.major_before.toFixed(3)}</td>
+        <td>${ag.major_after.toFixed(3)}</td>
+      </tr></tbody></table>`;
+    });
+  </script>
+</body>
+</html>
