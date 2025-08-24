@@ -15,9 +15,9 @@ Requirements
   ./scripts/run_all.sh
 
 This will generate CSV files in the data/ folder:
-  results_no_compact.csv
-  results_manual_compact.csv
-  results_auto_compact.csv
+  - results_no_compact.csv
+  - results_manual_compact.csv
+  - results_auto_compact.csv
 
 You can also run a single configuration manually:
 RUNS=5 N_OBJECTS=300000 KEEP_EVERY=3 DO_COMPACT=1 \
@@ -25,21 +25,21 @@ RUNS=5 N_OBJECTS=300000 KEEP_EVERY=3 DO_COMPACT=1 \
   ruby scripts/compaction_experiment.rb
 
 
-Analysis with Python
+Analysis with Python:
   Generate charts from CSV data:
-  python3 analysis/plot_compaction_csv.py
-  python3 analysis/compare_configs.py
+  - python3 analysis/plot_compaction_csv.py
+  - python3 analysis/compare_configs.py
 
 Outputs include:
-  heap_pages_before_after.png — pages before vs after compaction
-  timing_by_config.png — timing comparison across configurations
+- heap_pages_before_after.png — pages before vs after compaction
+- timing_by_config.png — timing comparison across configurations
 
-Interactive Dashboard
+Interactive Dashboard:
   Open in browser:
-  web/compaction_dashboard.html
+  - web/compaction_dashboard.html
   
 Features:
   Upload one or multiple CSV files from data/
-  Interactive bar charts for heap pages and timings
-  Summary table with averages
-  Easy configuration comparison
+  - Interactive bar charts for heap pages and timings
+  - Summary table with averages
+  - Easy configuration comparison
